@@ -197,7 +197,7 @@ def test_oxford_safe_selected_members(tmp_path, monkeypatch):
     monkeypatch.setattr(
         prepare,
         "download",
-        lambda url, target: archives[
+        lambda url, target, **kwargs: archives[
             "annotations" if "annotations" in url else "images"
         ],
     )
@@ -320,3 +320,91 @@ def test_publish_pushes_only_result_bundle(tmp_path):
         check=True,
         capture_output=True,
     )
+
+
+@pytest.mark.parametrize("honor_range", [True, False])
+def test_download_resume_and_range_ignored(tmp_path, monkeypatch, honor_range):
+    import hashlib
+    from cat_labeler import prepare
+
+    content = b"known-archive-bytes" * 100
+    target = tmp_path / "archive.tar.gz"
+    target.with_suffix(".gz.part").write_bytes(content[:57])
+    expected = hashlib.md5(content).hexdigest()
+    requests_seen = []
+
+    class Response:
+        def __init__(self, headers):
+            offset = int(headers.get("Range", "bytes=0-").split("=")[1].rstrip("-"))
+            self.status_code = 206 if honor_range else 200
+            self.body = content[offset:] if honor_range else content
+            self.headers = {"Content-Length": str(len(self.body))}
+            if honor_range:
+                self.headers["Content-Range"] = (
+                    f"bytes {offset}-{len(content) - 1}/{len(content)}"
+                )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, size):
+            yield self.body
+
+    def get(url, **kwargs):
+        requests_seen.append(kwargs["headers"])
+        return Response(kwargs["headers"])
+
+    monkeypatch.setattr(prepare.requests, "get", get)
+    prepare.download("https://example.invalid/archive", target, expected_md5=expected)
+    assert requests_seen[0]["Range"] == "bytes=57-"
+    assert target.read_bytes() == content
+    assert not target.with_suffix(".gz.part").exists()
+
+
+def test_download_checksum_failure_uses_next_source(tmp_path, monkeypatch):
+    import hashlib
+    from cat_labeler import prepare
+
+    content = b"valid archive"
+    urls = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+            self.headers = {"Content-Length": str(len(body))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, size):
+            yield self.body
+
+    def get(url, **kwargs):
+        urls.append(url)
+        return Response(b"wrong bytes" if len(urls) == 1 else content)
+
+    monkeypatch.setattr(prepare.requests, "get", get)
+    monkeypatch.setattr(prepare.time, "sleep", lambda duration: None)
+    target = tmp_path / "archive.tar.gz"
+    prepare.download(
+        "primary",
+        target,
+        mirrors=("mirror",),
+        expected_md5=hashlib.md5(content).hexdigest(),
+    )
+    assert urls == ["primary", "mirror"]
+    assert target.read_bytes() == content

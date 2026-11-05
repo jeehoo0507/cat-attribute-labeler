@@ -5,6 +5,7 @@ import csv
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import io
+import hashlib
 import json
 from pathlib import Path
 import random
@@ -21,6 +22,12 @@ from .common import atomic_json, exclusive_lock, fingerprint, paths, read_json, 
 COCO_BUCKET = "https://s3.amazonaws.com/images.cocodataset.org/"
 COCO_ARCHIVE = COCO_BUCKET + "annotations/annotations_trainval2017.zip"
 OXFORD_ROOT = "https://www.robots.ox.ac.uk/~vgg/data/pets/data/"
+OXFORD_IMAGES_MIRROR = (
+    "https://huggingface.co/datasets/Shiym/ViT-FineTune/resolve/"
+    "1cc46adc2014ae0f8d67cc55a84d2022886b0364/oxford-iiit-pet/images.tar.gz"
+)
+OXFORD_IMAGES_MD5 = "5c4f3ee8e5d25df40f4fd59a7f44e54c"
+OXFORD_ANNOTATIONS_MD5 = "95a8c909bbe2e81eed6a22bccdf3f68f"
 OI_BOXES = {
     "train": "https://storage.googleapis.com/openimages/v6/oidv6-train-annotations-bbox.csv",
     "validation": "https://storage.googleapis.com/openimages/v5/validation-annotations-bbox.csv",
@@ -32,29 +39,118 @@ OI_METADATA = {
 CAT_CLASS = "/m/01yrx"
 
 
-def download(url, target):
-    """Retry with a fresh partial file, then atomically install the completed file."""
+def md5_matches(path, expected):
+    if expected is None:
+        return True
+    digest = hashlib.md5(usedforsecurity=False)
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest() == expected
+
+
+def download(url, target, *, mirrors=(), expected_md5=None):
+    """Resume known-checksum archives, bound slow transfers, and log progress."""
     target = Path(target)
     if target.exists():
+        if not md5_matches(target, expected_md5):
+            raise IOError(
+                f"Cached file failed checksum: {target}. Remove this corrupt file and retry."
+            )
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".part")
-    for attempt in range(3):
-        try:
-            with requests.get(url, stream=True, timeout=(20, 120)) as response:
-                response.raise_for_status()
-                expected = response.headers.get("Content-Length")
-                with temporary.open("wb") as handle:
-                    for block in response.iter_content(1024 * 1024):
-                        handle.write(block)
-                if expected and not response.headers.get("Content-Encoding"):
-                    if temporary.stat().st_size != int(expected):
-                        raise IOError(f"Incomplete transfer: {url}")
+    sources = [url, *mirrors]
+    for attempt in range(max(3, len(sources))):
+        source = sources[attempt % len(sources)]
+        # Cross-source resumption requires a known archive checksum. Ordinary
+        # images restart instead of appending bytes from an unverified object.
+        offset = temporary.stat().st_size if expected_md5 and temporary.exists() else 0
+        if offset and md5_matches(temporary, expected_md5):
             temporary.replace(target)
             return target
-        except (requests.RequestException, IOError):
-            temporary.unlink(missing_ok=True)
-            if attempt == 2:
+        headers = {"Accept-Encoding": "identity"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        started = last_report = time.monotonic()
+        transferred = 0
+        print(
+            f"Downloading {target.name} (attempt {attempt + 1}, resume {offset / 1024**2:.1f} MiB)",
+            flush=True,
+        )
+        try:
+            with requests.get(
+                source, headers=headers, stream=True, timeout=(20, 45)
+            ) as response:
+                if response.status_code == 416:
+                    temporary.unlink(missing_ok=True)
+                    raise IOError("Server rejected the partial range; restarting")
+                response.raise_for_status()
+                if response.status_code == 206:
+                    content_range = response.headers.get("Content-Range", "")
+                    if not content_range.startswith(f"bytes {offset}-"):
+                        raise IOError(f"Unexpected range response: {content_range}")
+                else:
+                    # Some origins ignore Range. Replace instead of corrupting
+                    # the archive by appending a full response to the prefix.
+                    offset = 0
+                expected = response.headers.get("Content-Length")
+                expected = int(expected) if expected else None
+                with temporary.open("ab" if offset else "wb") as handle:
+                    for block in response.iter_content(8192):
+                        if not block:
+                            continue
+                        handle.write(block)
+                        transferred += len(block)
+                        now = time.monotonic()
+                        elapsed = now - started
+                        if now - last_report >= 10:
+                            handle.flush()
+                            total = (
+                                f"/{(offset + expected) / 1024**2:.1f}"
+                                if expected
+                                else ""
+                            )
+                            print(
+                                f"  {target.name}: {(offset + transferred) / 1024**2:.1f}{total} MiB, "
+                                f"{transferred / max(elapsed, 0.001) / 1024:.1f} KiB/s",
+                                flush=True,
+                            )
+                            last_report = now
+                        if elapsed > 60 and transferred / elapsed < 64 * 1024:
+                            raise IOError(
+                                "Transfer below 64 KiB/s for over 60 seconds; switching source"
+                            )
+                        if elapsed > 1800:
+                            raise IOError(
+                                "Transfer exceeded 30 minutes; retrying from partial archive"
+                            )
+                if expected is not None and transferred != expected:
+                    raise IOError(
+                        f"Incomplete transfer: expected {expected} bytes, got {transferred}"
+                    )
+            if not md5_matches(temporary, expected_md5):
+                temporary.unlink(missing_ok=True)
+                raise IOError("Archive checksum mismatch; discarding partial bytes")
+            temporary.replace(target)
+            atomic_json(
+                target.with_name(target.name + ".download.json"),
+                {
+                    "url": source,
+                    "bytes": target.stat().st_size,
+                    "expected_md5": expected_md5,
+                },
+            )
+            print(
+                f"Downloaded {target.name}: {target.stat().st_size / 1024**2:.1f} MiB",
+                flush=True,
+            )
+            return target
+        except (requests.RequestException, IOError) as error:
+            print(f"Download retry for {target.name}: {error}", flush=True)
+            if not expected_md5:
+                temporary.unlink(missing_ok=True)
+            if attempt + 1 == max(3, len(sources)):
                 raise
             time.sleep(attempt + 1)
 
@@ -101,7 +197,10 @@ def coco_catalog(root, count, seed):
 
 def oxford_catalog(root, count, seed):
     annotations = download(
-        OXFORD_ROOT + "annotations.tar.gz", root / "downloads/oxford_annotations.tar.gz"
+        OXFORD_ROOT + "annotations.tar.gz",
+        root / "downloads/oxford_annotations.tar.gz",
+        mirrors=("https://thor.robots.ox.ac.uk/~vgg/data/pets/annotations.tar.gz",),
+        expected_md5=OXFORD_ANNOTATIONS_MD5,
     )
     records = []
     with tarfile.open(annotations) as handle:
@@ -143,7 +242,13 @@ def oxford_catalog(root, count, seed):
             )
     selected = choose(records, count, seed)
     archive = download(
-        OXFORD_ROOT + "images.tar.gz", root / "downloads/oxford_images.tar.gz"
+        OXFORD_IMAGES_MIRROR,
+        root / "downloads/oxford_images.tar.gz",
+        mirrors=(
+            "https://thor.robots.ox.ac.uk/~vgg/data/pets/images.tar.gz",
+            OXFORD_ROOT + "images.tar.gz",
+        ),
+        expected_md5=OXFORD_IMAGES_MD5,
     )
     wanted = {f"images/{r['source_id']}.jpg": r for r in selected}
     with tarfile.open(archive) as handle:

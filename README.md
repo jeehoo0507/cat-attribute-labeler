@@ -105,7 +105,9 @@ ls results/pilot32b_v1
 - COCO는 약 253MB의 annotations ZIP을 받은 뒤 **Cat 이미지 파일만** 다운로드한다.
   캡션, 원본 이미지 URL, 사진별 라이선스 레코드, 대상 박스를 보관한다.
   공식 이미지 S3 버킷의 HTTPS 주소를 사용한다.
-- Oxford는 images/annotations tar.gz를 받되 선택된 고양이 사진만 추출한다.
+- Oxford 이미지는 고정 revision의 [Hugging Face 미러](https://huggingface.co/datasets/Shiym/ViT-FineTune/tree/1cc46adc2014ae0f8d67cc55a84d2022886b0364/oxford-iiit-pet)를 우선 사용한다.
+  원본 공개 MD5 `5c4f3ee8e5d25df40f4fd59a7f44e54c`와 일치해야 선택된 고양이 사진을 추출한다.
+  미러 실패 시 Oxford 원본 경로로 재시도한다.
   기존 머리 박스를 얼굴 크롭의 출발점으로 활용한다. CC BY-SA 4.0 메타데이터를 보관한다.
 - Open Images는 공식 Cat 박스 주석을 스트리밍해 후보를 고른 뒤 해당 이미지 ID만 다운로드한다.
   train 파일 전체는 약 2.26GB이므로 이미지 후보가 목표의 2배에 도달하면 탐색을 멈춘다.
@@ -172,6 +174,9 @@ results/<RUN_NAME>/
 
 파일 단위 원자적 저장과 프로세스 잠금으로 중단·재실행을 처리한다.
 이미지 다운로드는 실패 파일부터 재시도하고 이미 받은 정상 파일은 재사용한다.
+체크섬이 알려진 Oxford archive는 `.part` 파일부터 HTTP Range로 이어받는다. 서버가 Range를 무시하면 안전하게 처음부터 쓴다.
+다운로드 중 10초 간격으로 크기와 속도를 출력하고, 60초 이상 평균 64KiB/s 미만이면 다음 경로로 전환한다.
+원본 체크섬 근거 — https://docs.pytorch.org/vision/main/_modules/torchvision/datasets/oxford_iiit_pet.html
 모델 JSON이 스키마에 맞지 않으면 최대 두 번 요청하고 실패 원문을 남긴다.
 라벨링 오류가 남으면 전체 완료로 처리하거나 자동 푸시하지 않는다.
 

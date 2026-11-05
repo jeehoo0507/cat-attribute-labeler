@@ -8,6 +8,6 @@
 export DATA_ROOT OUTPUT_ROOT HF_HOME
 export CUDA_VISIBLE_DEVICES="$GPUS"
 export TOKENIZERS_PARALLELISM=false
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 CONFIG="${CONFIG:-configs/pilot.json}"
 export CONFIG
