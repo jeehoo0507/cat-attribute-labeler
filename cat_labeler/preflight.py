@@ -1,7 +1,9 @@
 import argparse
 import json
+import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from .common import atomic_json, paths, read_json
 
@@ -11,17 +13,22 @@ def check(config_path, cpu_only=False):
     config = read_json(config_path)
     root.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
+    cache_root = Path(os.environ.get("HF_HOME", str(root))).resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
     report = {
         "data_root": str(root),
         "output_root": str(output),
         "model": config["model"],
         "free_disk_gib": round(shutil.disk_usage(root).free / 1024**3, 1),
+        "free_model_cache_gib": round(shutil.disk_usage(cache_root).free / 1024**3, 1),
         "cpu_only": cpu_only,
     }
-    if report["free_disk_gib"] < 85 and not cpu_only:
+    if report["free_model_cache_gib"] < 85 and not cpu_only:
         raise RuntimeError(
             "At least 85 GiB free disk required for original 32B model shards and the pilot."
         )
+    if report["free_disk_gib"] < 5 and not cpu_only:
+        raise RuntimeError("At least 5 GiB free data storage required for the pilot.")
     if not cpu_only:
         import torch
 

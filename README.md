@@ -7,6 +7,22 @@
 슈딩이 보유 사진은 입력에 포함하지 않는다. 이 레포는 데이터 수집·주석 도구이며
 임베딩 모델 학습은 별도 작업이다. 모든 자동 출력은 `unreviewed`로 저장된다.
 
+## Colab Pro+ 실행
+
+[Colab에서 32B 노트북 열기](https://colab.research.google.com/github/jeehoo0507/cat-attribute-labeler/blob/main/notebooks/cat_attribute_labeler_32b.ipynb)
+
+A100·고용량 RAM을 우선 선택하고 위에서 아래로 실행한다. GPU 종류는 가용성에 따라 달라진다.
+데이터·중간 관찰·라벨은 Drive에, 모델 캐시·가상환경·프로세스 잠금은 런타임 로컬에 둔다.
+Drive FUSE에서 flock을 사용하지 않도록 LOCK_ROOT를 지정한다.
+같은 Drive run을 두 런타임에서 동시에 실행하지 않는다.
+Drive의 작은 파일 I/O를 고려해 기본 500장 파일럿을 대상으로 한다.
+
+다운로드 → GPU smoke → 전체 라벨링이 한 셀에서 이어진다. 중지 후 같은 RUN_NAME으로 재개할 수 있다.
+Pro+는 충분한 compute units가 있을 때 최대 24시간 연속 실행을 지원한다.
+런타임 삭제 시 로컬 모델 캐시는 다시 받아야 하며, Drive에 저장 완료한 데이터/라벨은 유지된다.
+선택 셀에서 결과 ZIP 저장과 GH_TOKEN Secret을 이용한 결과 푸시를 제공한다.
+코랩 노트북의 실제 GPU 실행은 사용자 런타임에서 smoke로 검증해야 한다.
+
 ## 서버에서 클론부터 실행
 
 Linux x86_64, Python 3.11/3.12, NVIDIA 드라이버 570 이상을 기준으로 한다.

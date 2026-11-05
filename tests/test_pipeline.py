@@ -408,3 +408,32 @@ def test_download_checksum_failure_uses_next_source(tmp_path, monkeypatch):
     )
     assert urls == ["primary", "mirror"]
     assert target.read_bytes() == content
+
+
+def test_local_lock_root_supports_drive_outputs(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCK_ROOT", str(tmp_path / "local-locks"))
+    target = tmp_path / "drive/output/.label.lock"
+    with exclusive_lock(target):
+        with pytest.raises(RuntimeError, match="Another process"):
+            with exclusive_lock(target):
+                pass
+    assert not target.exists()
+    assert len(list((tmp_path / "local-locks").glob("*.lock"))) == 1
+
+
+def test_colab_notebook_cells_compile_and_preserve_32b():
+    repository = Path(__file__).resolve().parents[1]
+    notebook = json.loads(
+        (repository / "notebooks/cat_attribute_labeler_32b.ipynb").read_text()
+    )
+    assert notebook["nbformat"] == 4
+    for cell in notebook["cells"]:
+        if cell["cell_type"] == "code":
+            assert cell["outputs"] == []
+            compile("".join(cell["source"]), cell["id"], "exec")
+    text = json.dumps(notebook)
+    assert "PUBLISH_RESULTS" in text and "LOCK_ROOT" in text
+    assert (
+        json.loads((repository / "configs/pilot.json").read_text())["model"]
+        == "Qwen/Qwen3-VL-32B-Instruct"
+    )

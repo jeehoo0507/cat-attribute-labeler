@@ -48,6 +48,11 @@ def paths():
 @contextlib.contextmanager
 def exclusive_lock(path):
     path = Path(path)
+    # Drive's FUSE mount may not implement flock. Keep locks on the runtime's
+    # local filesystem, while annotation files can live on persistent Drive.
+    if os.environ.get("LOCK_ROOT"):
+        identity = hashlib.sha256(str(path.resolve()).encode()).hexdigest()
+        path = Path(os.environ["LOCK_ROOT"]) / (identity + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as handle:
         try:
