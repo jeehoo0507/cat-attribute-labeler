@@ -1,0 +1,19 @@
+[project]
+name = "cat-attribute-labeler"
+version = "0.1.0"
+description = "Two-pass cat attribute annotation on a CUDA server"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "pillow>=11,<13", "requests>=2.32,<3", "pydantic>=2.10,<3",
+  "huggingface-hub>=0.34,<2", "numpy>=2,<3",
+]
+
+[project.optional-dependencies]
+gpu = [
+  "torch==2.9.1", "torchvision==0.24.1", "transformers==4.57.6",
+  "accelerate>=1.10,<2", "bitsandbytes>=0.48,<0.50", "qwen-vl-utils>=0.0.14,<0.1",
+]
+dev = ["pytest>=8,<10"]
+
+[tool.uv]
+package = false

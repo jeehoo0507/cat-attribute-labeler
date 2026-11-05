@@ -1,0 +1,10 @@
+{
+  "dataset": {"coco": 5000, "oxford": 2400, "openimages": 22600, "openimages_split": "train", "seed": 42},
+  "model": "Qwen/Qwen3-VL-32B-Instruct",
+  "revision": "main",
+  "quantization": "nf4",
+  "full_max_pixels": 524288,
+  "crop_max_pixels": 262144,
+  "max_new_tokens": 2048,
+  "json_attempts": 2
+}
